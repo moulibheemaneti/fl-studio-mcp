@@ -125,12 +125,10 @@ fl-studio-mcp/
 │       └── drums.py
 ├── fl_scripts/
 │   ├── device_FLMCP.py        # → Settings/Hardware/FLMCP/
-│   ├── FLMCP_Notes.pyscript   # → Settings/Piano roll scripts/
-│   └── spike/                 # Phase 0 spikes (throwaway)
+│   └── FLMCP_Notes.pyscript   # → Settings/Piano roll scripts/
 ├── scripts/
 │   ├── install_mac.sh         # copies FL scripts, creates Piano roll scripts/FLMCP/
-│   ├── check_phase0.py        # setup check; re-run after FL updates
-│   └── sysex_spike.py         # Phase 0 SysEx test (throwaway)
+│   └── doctor.py              # checks Python, ports and Port numbers, pings FL; re-run after FL updates
 └── tests/
     ├── test_theory.py
     ├── test_sysex.py          # runs both copies of the message format on the same cases
@@ -138,6 +136,8 @@ fl-studio-mcp/
 ```
 
 **Layering rule:** `theory/` knows nothing about MCP or FL. `bridge/` knows nothing about MCP. `tools/` only connects the two. This keeps most code testable without FL open.
+
+**Phase 0 spikes** were throwaway and have been removed. The code is preserved in commit [`829de72`](https://github.com/moulibheemaneti/fl-studio-mcp/tree/829de72e455f7cc9dbae31fe628f7618534f293a), and the results are in [docs/file-mailbox-findings.md](docs/file-mailbox-findings.md).
 
 **One message format, two copies:** FL can't import our package, so `device_FLMCP.py` carries its own copy of the SysEx format. `tests/test_sysex.py` runs both copies on the same cases so they can't drift apart.
 
@@ -225,7 +225,8 @@ Each phase = one branch + one PR, reviewed by the lead engineer.
 - [x] **Spike:** FL's built-in Python and its file sandbox ([findings](docs/file-mailbox-findings.md)). This ruled out the file mailbox
 - [x] **Spike:** SysEx round trip with FL (0.2 ms, 16 KB per message both ways)
 - [x] **Spike:** the piano roll script can read and write in its own folder
-- **Done when:** `uv run scripts/check_phase0.py` shows 9/9 ✅
+- [x] Spikes removed after recording the results (kept in commit `829de72`)
+- **Done when:** the Phase 0 setup check showed 9/9 ✅
 
 ### Phase 1: Hello MCP (no FL yet)
 - [ ] `server.py` using `MCPServer` with one tool: `get_scale`
@@ -239,6 +240,7 @@ Each phase = one branch + one PR, reviewed by the lead engineer.
 - [ ] `bridge/link.py`: send a request, wait for the reply with the same `id`, time out with a clear error
 - [ ] `device_FLMCP.py`: handles `ping`, `play`, `stop`, `set_tempo` in `OnSysEx`, catches every error and replies with an error code
 - [ ] `install_mac.sh`: copies the FL scripts and creates `Piano roll scripts/FLMCP/`
+- [ ] `doctor.py`: checks Python, packages, both IAC ports and the Port number match, then pings `device_FLMCP.py`
 - [ ] Clear errors when FL is closed, the script isn't selected, or the Port numbers don't match
 - **Learn:** MIDI SysEx, FL callbacks (`OnInit`, `OnSysEx`), request/response with ids
 - **Done when:** a terminal command makes FL play, stop and change tempo, and says clearly what's wrong when FL is closed
@@ -284,7 +286,7 @@ Each phase = one branch + one PR, reviewed by the lead engineer.
 | Risk | Plan |
 |---|---|
 | Notes need a manual click | Accept for v1; Cmd+Opt+Y auto-run as a stretch goal |
-| FL's file sandbox is undocumented and could change in any update | Use files only where tested (piano roll folder). Re-run `scripts/check_phase0.py` after FL updates |
+| FL's file sandbox is undocumented and could change in any update | Use files only where tested (piano roll folder). Re-run `scripts/doctor.py` after FL updates. To re-test the sandbox itself, run the Phase 0 spikes from commit `829de72` |
 | SysEx size limits | 16 KB tested; cap at 8 KB; add chunking only if needed |
 | The two copies of the message format drift apart | `tests/test_sysex.py` runs both on the same cases |
 | Port numbers or ports set up wrong in FL | `ping` on startup, plus setup-specific error messages |
