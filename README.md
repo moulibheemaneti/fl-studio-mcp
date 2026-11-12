@@ -1,4 +1,4 @@
-# FL Studio MCP — Project Plan
+# FL Studio MCP: Project Plan
 
 > **Goal:** Let Claude write chords, melodies and drums straight into FL Studio 2026 on macOS from a plain-language request, so composing gets faster.
 > **Second goal:** Learn MCP and AI tool design by building every layer ourselves.
@@ -10,7 +10,7 @@
 | Platform | macOS, FL Studio 2026 |
 | Language | Python (MCP server and FL scripts) |
 | AI client | Claude Desktop (any MCP client should work) |
-| Last verified | 12 Nov 2026 (versions in §4) |
+| Last verified | 12 Nov 2026 (versions in §4, FL behaviour in [docs/file-mailbox-findings.md](docs/file-mailbox-findings.md)) |
 
 ---
 
@@ -20,7 +20,7 @@
 
 ### In scope (v1)
 - Transport: play, stop, set tempo
-- Writing notes into the piano roll (chords, melody, drums)
+- Writing notes into the piano roll (chords, melody), and drums into the Channel rack
 - Music-theory helpers in Python (scales, chord progressions, drum patterns)
 - Reading basic project info back (tempo, channels)
 
@@ -32,18 +32,24 @@
 
 ---
 
-## 2. The limit that shapes the design
+## 2. The limits that shape the design
 
-FL Studio has **no external API**. Python only runs inside it, in two places:
+FL Studio has **no external API**. Python only runs inside it, in two kinds of script, and FL runs both behind a **sandbox** that blocks most file access. Phase 0 tested this on FL 2026; the evidence is in [docs/file-mailbox-findings.md](docs/file-mailbox-findings.md).
 
-| FL environment | Runs | Can do |
-|---|---|---|
-| Device script (`device_*.py`) | All the time, reacts to MIDI | Transport, mixer, channels, patterns |
-| Piano roll script (`.pyscript`) | Only when the user runs it from the menu | Add, edit and delete notes |
+| FL script | Runs | Can do | Files it may use |
+|---|---|---|---|
+| Controller script (`device_*.py`) | All the time; reacts to MIDI, including SysEx | Transport, mixer, channels, patterns, Channel rack steps | **Read only**, in its own folder. **No writing anywhere** |
+| Piano roll script (`.pyscript`) | Only when the user runs it (piano roll **Tools → Scripts**) | Add, edit and delete notes | **Read and write** in `Settings/Piano roll scripts/` only. No renaming, deleting or making folders |
 
-👉 Notes can only be written when the user runs our piano roll script (**once per batch, one click**).
+👉 Commands can't use files, so they travel inside **MIDI SysEx messages**.
+👉 Notes can only be written by the piano roll script, so they travel as **files in its own folder**. The user runs the script **once per batch (one click)**. FL's built-in "Run last script again" (**Cmd+Opt+Y**) could remove that click later.
 
-**Still true in FL Studio 2026:** the new scripting functions cover tempo, pattern length and swing, but none of them let a device script write notes. Gopher (FL's built-in AI) can now control some features experimentally, but that's internal and not a public API.
+**Rules for all code that runs inside FL:**
+- Import only `json`, `os`, `time` and FL's own modules. `datetime` crashes FL on "Reload script", and `tempfile` is blocked.
+- Use the built-in `open()` only. Never create folders; the Mac side does that.
+- Catch `Exception`, not just `OSError`: blocked calls raise `SystemError` or `TypeError`.
+
+**Still true in FL Studio 2026:** the new scripting functions cover tempo, pattern length and swing, but none of them let a controller script write notes. Gopher (FL's built-in AI) can now control some features experimentally, but that's internal and not a public API.
 
 ---
 
@@ -52,21 +58,29 @@ FL Studio has **no external API**. Python only runs inside it, in two places:
 ```mermaid
 flowchart LR
     C[Claude] -->|MCP over stdio| S[MCP server<br/>Python]
-    S -->|writes request.json| M[(~/.fl-mcp/ mailbox)]
-    S -->|MIDI 'doorbell'| I[IAC Driver<br/>virtual MIDI cable]
-    I --> D[Device script<br/>inside FL]
-    D -->|reads request / writes response| M
-    S -->|writes notes.json| M
-    M -->|user runs script| P[Piano roll script<br/>inside FL]
+    S -->|SysEx request| REQ[IAC port<br/>FLMCP-REQ]
+    REQ --> D[Controller script<br/>inside FL]
+    D -->|SysEx response| RES[IAC port<br/>FLMCP-RES]
+    RES --> S
+    S -->|writes notes.json| N[("Piano roll scripts/<br/>FLMCP/")]
+    N -->|user runs script| P[Piano roll script<br/>inside FL]
+    P -->|writes result + .done| N
 ```
 
-**Pattern: file mailbox + MIDI doorbell**
-- The server writes the command as JSON into the mailbox folder.
-- It sends one MIDI message (the "doorbell") over the IAC Driver.
-- The device script wakes up, reads the JSON, calls the FL API, and writes a response file.
-- Notes go to `notes.json`, which the piano roll script reads when the user runs it.
+**Pattern: SysEx for commands, a file drop for notes**
 
-*Analogy:* we leave a letter in the mailbox and ring the bell. FL opens the door, reads the letter, does the job, and leaves a reply in the mailbox.
+**Commands** (play, stop, tempo, project info, drum steps):
+1. The server puts the JSON request inside a SysEx message and sends it on the IAC port `FLMCP-REQ`.
+2. The controller script receives it in `OnSysEx`, calls the FL API and replies on `FLMCP-RES`. In FL's MIDI settings, the input and output use the same **Port number**, which is how FL knows where to send replies.
+3. Two ports, one per direction, so neither side ever hears its own messages.
+
+**Notes** (chords, melody):
+1. The server writes `notes.json` into `Settings/Piano roll scripts/FLMCP/`. It writes a temporary file and renames it, so FL never reads half a file.
+2. The user runs **FLMCP_Notes** from the piano roll (Tools → Scripts).
+3. The script adds the notes, then writes `result-<id>.json` followed by `result-<id>.done`. FL can't rename files, so the marker file is the "finished" signal.
+4. The server reads the result and cleans up, because FL can't delete files.
+
+*Analogy:* commands are **phone calls**: instant, and the answer comes straight back on a second line. Notes are a **parcel** left in FL's own mailbox, which FL opens when you press its button, then leaves a receipt.
 
 ---
 
@@ -76,10 +90,10 @@ flowchart LR
 |---|---|---|
 | MCP protocol | Handled by the SDK | Latest spec: **2026-07-28** (stateless, no handshake) |
 | MCP SDK | Official MCP Python SDK **v2** (`mcp`), class **`MCPServer`** | v2 is stable. `FastMCP` was renamed `MCPServer`; tutorials that import `mcp.server.fastmcp` are v1, so skip them |
-| FL Studio | FL Studio 2026 (26.1) | Released 7 Jul 2026 |
+| FL Studio | FL Studio 2026 (26.1), MIDI scripting API **45**, built-in Python **3.12.1** (sandboxed) | Released 7 Jul 2026 |
 | Python | **3.12**, managed by `uv` | Chosen because `python-rtmidi` has no macOS ARM wheels above 3.12 |
 | MIDI | `mido` + `python-rtmidi` | python-rtmidi 1.5.8 (no new release in a long time; see Risks) |
-| Virtual MIDI cable | macOS IAC Driver (Audio MIDI Setup) | — |
+| Virtual MIDI cable | macOS IAC Driver with two ports: `FLMCP-REQ` (Mac → FL) and `FLMCP-RES` (FL → Mac) | Tested in Phase 0 |
 | FL API autocomplete | `fl-studio-api-stubs` | 37.x |
 | Testing | `pytest`, MCP Inspector | — |
 | Lint/format | `ruff` | — |
@@ -90,9 +104,10 @@ flowchart LR
 
 ```
 fl-studio-mcp/
-├── PLAN.md                    # this file
-├── README.md                  # setup + usage
+├── README.md                  # this plan
 ├── DECISIONS.md               # short log of design decisions
+├── docs/
+│   └── file-mailbox-findings.md   # Phase 0: what FL's sandbox allows, with evidence
 ├── pyproject.toml
 ├── src/fl_mcp/
 │   ├── server.py              # creates MCP server, registers tools
@@ -101,29 +116,54 @@ fl-studio-mcp/
 │   │   ├── notes.py
 │   │   └── project.py
 │   ├── bridge/                # talking to FL
-│   │   ├── mailbox.py         # read/write JSON in ~/.fl-mcp/
-│   │   └── midi.py            # doorbell over IAC Driver
+│   │   ├── sysex.py           # JSON <-> SysEx message format
+│   │   ├── link.py            # request/response over FLMCP-REQ / FLMCP-RES, timeouts
+│   │   └── notes_drop.py      # writes notes.json, waits for the .done marker, cleans up
 │   └── theory/                # pure Python, no MCP, no FL
 │       ├── scales.py
 │       ├── chords.py
 │       └── drums.py
 ├── fl_scripts/
-│   ├── device_FLMCP.py        # → ~/Documents/Image-Line/FL Studio/Settings/Hardware/FLMCP/
-│   └── FLMCP_Notes.pyscript   # → ~/Documents/Image-Line/FL Studio/Settings/Piano roll scripts/
+│   ├── device_FLMCP.py        # → Settings/Hardware/FLMCP/
+│   ├── FLMCP_Notes.pyscript   # → Settings/Piano roll scripts/
+│   └── spike/                 # Phase 0 spikes (throwaway)
 ├── scripts/
-│   └── install_mac.sh         # copies FL scripts, creates mailbox folder
+│   ├── install_mac.sh         # copies FL scripts, creates Piano roll scripts/FLMCP/
+│   ├── check_phase0.py        # setup check; re-run after FL updates
+│   └── sysex_spike.py         # Phase 0 SysEx test (throwaway)
 └── tests/
     ├── test_theory.py
-    └── test_mailbox.py
+    ├── test_sysex.py          # runs both copies of the message format on the same cases
+    └── test_notes_drop.py
 ```
 
 **Layering rule:** `theory/` knows nothing about MCP or FL. `bridge/` knows nothing about MCP. `tools/` only connects the two. This keeps most code testable without FL open.
+
+**One message format, two copies:** FL can't import our package, so `device_FLMCP.py` carries its own copy of the SysEx format. `tests/test_sysex.py` runs both copies on the same cases so they can't drift apart.
 
 ---
 
 ## 6. Data contracts
 
-### Notes (`~/.fl-mcp/notes.json`)
+### Commands: SysEx messages
+Every message, in both directions:
+
+```
+F0  7D  46 4D  <kind>  <ASCII JSON>  F7
+```
+- `7D`: MIDI's manufacturer ID for non-commercial use. `46 4D` = "FM", our tag.
+- `kind`: `01` request (Mac → FL), `02` response (FL → Mac), `03` event (FL → Mac, e.g. a heartbeat).
+- JSON is written with `ensure_ascii=True`, so every byte stays below `0x80`, as SysEx requires.
+- Messages are capped at **8 KB**. Phase 0 tested 16 KB, so there's a safety margin; anything bigger needs chunking later.
+
+```json
+{ "id": "a91b…", "command": "set_tempo", "args": { "bpm": 90 } }
+{ "id": "a91b…", "ok": true, "result": { "bpm": 90 } }
+{ "id": "a91b…", "ok": false, "error": { "code": "fl_error", "message": "…" } }
+```
+- Tempo is always plain **BPM**. FL reports BPM × 1000, and the controller script converts it.
+
+### Notes: `Settings/Piano roll scripts/FLMCP/notes.json`
 Positions are in **beats**, not ticks. The piano roll script converts them using FL's PPQ.
 
 ```json
@@ -139,34 +179,37 @@ Positions are in **beats**, not ticks. The piano roll script converts them using
 - `pitch`: MIDI number (60 = C5 in FL)
 - `velocity`: 0.0–1.0
 - `mode`: `append` or `replace`
+- `created_at` is written by the Mac side; FL never reads it.
 
-### Commands (`~/.fl-mcp/request.json` → `response.json`)
+### Notes result: `result-<id>.json`, then `result-<id>.done`
 ```json
-{ "id": "a91b…", "command": "set_tempo", "args": { "bpm": 90 } }
-{ "id": "a91b…", "ok": true, "result": { "bpm": 90 } }
+{ "id": "2f1c…", "ok": true, "added": 32 }
 ```
+- FL writes the `.json` first and the `.done` marker last. The marker means "finished".
+- If a `.done` for that `id` already exists, the script does nothing, so running it twice can't add notes twice.
 
 ---
 
 ## 7. MCP tools (v1)
 
-| Tool | Phase | What it does |
-|---|---|---|
-| `get_scale(root, mode)` | 1 | Returns the notes of a scale |
-| `play()` / `stop()` | 3 | Transport |
-| `set_tempo(bpm)` | 3 | Sets project tempo |
-| `set_swing(amount)` *(optional)* | 3 | Uses the new FL 2026 swing function, which suits hip-hop |
-| `set_pattern_length(bars)` *(optional)* | 3 | Uses the new FL 2026 pattern-length function |
-| `add_notes(notes, mode)` | 4 | Queues notes for the piano roll |
-| `add_chord_progression(key, mode, numerals, bars)` | 5 | Builds chords with theory code, then queues them |
-| `add_drum_pattern(style, bars)` | 5 | Builds kick/snare/hat pattern, then queues it |
-| `get_project_info()` | 6 | Tempo, channel names, current pattern |
+| Tool | Phase | Path | What it does |
+|---|---|---|---|
+| `get_scale(root, mode)` | 1 | — | Returns the notes of a scale |
+| `play()` / `stop()` | 3 | SysEx | Transport |
+| `set_tempo(bpm)` | 3 | SysEx | Sets project tempo |
+| `set_swing(amount)` *(optional)* | 3 | SysEx | Uses the new FL 2026 swing function, which suits hip-hop |
+| `set_pattern_length(bars)` *(optional)* | 3 | SysEx | Uses the new FL 2026 pattern-length function |
+| `add_notes(notes, mode)` | 4 | Notes file | Queues notes for the piano roll, then waits for the user's click |
+| `add_chord_progression(key, mode, numerals, bars)` | 5 | Notes file | Builds chords with theory code, then queues them |
+| `add_drum_pattern(style, bars)` | 5 | SysEx | Builds a kick/snare/hat pattern and writes it into the Channel rack steps, **with no click** |
+| `get_project_info()` | 6 | SysEx | Tempo, channel names, current pattern |
 
 **Tool rules**
 - The description is a prompt: say *when* to use the tool, not only what it does.
 - Inputs have clear types, ranges and examples.
 - Every tool returns a short human-readable result plus data.
 - Never `print()` to stdout. stdout is the MCP channel, so log to stderr instead.
+- When FL doesn't answer, say what to check (FL open? script selected? ports and Port numbers?) instead of a bare timeout.
 
 ---
 
@@ -174,56 +217,63 @@ Positions are in **beats**, not ticks. The piano roll script converts them using
 
 Each phase = one branch + one PR, reviewed by the lead engineer.
 
-### Phase 0 — Setup
-- [ ] `uv` project created, Python **3.12** pinned
-- [ ] Confirm `mcp` (v2) and `python-rtmidi` both install cleanly on 3.12
-- [ ] IAC Driver enabled (Audio MIDI Setup → IAC Driver → "Device is online")
-- [ ] FL API stubs installed for autocomplete
-- [ ] **Spike:** confirm FL's built-in Python can `open()` files and `import json`
-- **Done when:** the IAC port shows up in FL → Options → MIDI Settings
+### Phase 0: Setup and spikes ✅
+- [x] `uv` project created, Python **3.12** pinned
+- [x] Confirm `mcp` (v2) and `python-rtmidi` both install cleanly on 3.12
+- [x] IAC Driver online with two ports, `FLMCP-REQ` and `FLMCP-RES`
+- [x] FL API stubs installed for autocomplete
+- [x] **Spike:** FL's built-in Python and its file sandbox ([findings](docs/file-mailbox-findings.md)). This ruled out the file mailbox
+- [x] **Spike:** SysEx round trip with FL (0.2 ms, 16 KB per message both ways)
+- [x] **Spike:** the piano roll script can read and write in its own folder
+- **Done when:** `uv run scripts/check_phase0.py` shows 9/9 ✅
 
-### Phase 1 — Hello MCP (no FL yet)
+### Phase 1: Hello MCP (no FL yet)
 - [ ] `server.py` using `MCPServer` with one tool: `get_scale`
 - [ ] Tested in MCP Inspector
 - [ ] Connected to Claude Desktop
 - **Learn:** tools, input schemas, stdio transport, how Claude picks tools
 - **Done when:** Claude answers "what notes are in D minor?" by calling our tool
 
-### Phase 2 — Hello FL (no MCP)
-- [ ] `device_FLMCP.py` loads in FL without errors
-- [ ] Small Python script sends a doorbell → FL starts playing
-- [ ] Mailbox read/write working from inside FL
-- **Learn:** MIDI messages, FL callbacks (`OnControlChange`, `OnInit`)
-- **Done when:** a terminal command makes FL play and stop
+### Phase 2: Hello FL over SysEx (no MCP)
+- [ ] `bridge/sysex.py`: message encode/decode, with unit tests (no FL needed)
+- [ ] `bridge/link.py`: send a request, wait for the reply with the same `id`, time out with a clear error
+- [ ] `device_FLMCP.py`: handles `ping`, `play`, `stop`, `set_tempo` in `OnSysEx`, catches every error and replies with an error code
+- [ ] `install_mac.sh`: copies the FL scripts and creates `Piano roll scripts/FLMCP/`
+- [ ] Clear errors when FL is closed, the script isn't selected, or the Port numbers don't match
+- **Learn:** MIDI SysEx, FL callbacks (`OnInit`, `OnSysEx`), request/response with ids
+- **Done when:** a terminal command makes FL play, stop and change tempo, and says clearly what's wrong when FL is closed
 
-### Phase 3 — Connect them
-- [ ] `play`, `stop`, `set_tempo` tools use the mailbox + doorbell
-- [ ] `set_tempo` uses FL's built-in tempo function (added in FL 2025.2.4), with no workarounds
-- [ ] Timeout + clear error if FL is closed or the script is off
+### Phase 3: Connect them
+- [ ] `play`, `stop`, `set_tempo` MCP tools use `bridge/link.py`
+- [ ] Optional: `set_swing`, `set_pattern_length` (new FL 2026 functions)
 - **Learn:** the full request path, error handling for AI tools
 - **Done when:** "play at 90 BPM" works from Claude
 
-### Phase 4 — Notes v1
-- [ ] `add_notes` writes `notes.json`
-- [ ] `FLMCP_Notes.pyscript` reads it, adds notes, marks the batch applied
-- **Learn:** data contracts between two programs
+### Phase 4: Notes v1
+- [ ] `bridge/notes_drop.py`: writes `notes.json` (temporary file + rename), waits for `result-<id>.done`, reads the result, cleans up
+- [ ] `FLMCP_Notes.pyscript`: **no dialog**. Reads `notes.json`, converts beats to ticks with `score.PPQ`, adds notes, writes result + `.done`, skips batches it already applied
+- [ ] Before writing, the controller script opens the piano roll on the target channel (over SysEx), so the one click is easy
+- [ ] If nobody clicks, the tool tells Claude to ask the user to run **FLMCP_Notes**
+- **Learn:** data contracts between two programs, safe file handover
 - **Done when:** Claude writes a 4-bar melody and you hear it after one click
 
-### Phase 5 — Music brain
+### Phase 5: Music brain
 - [ ] `theory/` module: scales, chords (Roman numerals), drum patterns
 - [ ] Unit tests for theory code
-- [ ] `add_chord_progression`, `add_drum_pattern` tools
+- [ ] `add_chord_progression` (notes file) and `add_drum_pattern` (Channel rack steps over SysEx, no click)
 - **Learn:** what goes in code (facts) vs what Claude decides (taste)
 - **Done when:** "hip-hop beat in A minor" → chords + drums in FL
 
-### Phase 6 — Context
-- [ ] `get_project_info` via response file
+### Phase 6: Context
+- [ ] `get_project_info` over SysEx
 - [ ] Optional: MCP prompt template like "start a beat"
 - **Learn:** resources, prompts, feedback loops
 - **Done when:** Claude suggests a next step based on your actual project
 
 ### Stretch (after v1)
-- Auto-run the piano roll script (remove the manual click)
+- Remove the manual click: run **FLMCP_Notes** once per session, then trigger **Cmd+Opt+Y** ("Run last script again") from the server. Needs macOS Accessibility permission
+- Chunking for messages above 8 KB
+- A heartbeat from FL, so the server knows FL is alive before sending
 - Melody generation that avoids clashing with the chords
 - Save and reuse "beat templates"
 
@@ -233,10 +283,14 @@ Each phase = one branch + one PR, reviewed by the lead engineer.
 
 | Risk | Plan |
 |---|---|
-| Notes need a manual click | Accept for v1; investigate auto-run as a stretch goal |
-| FL's Python may lack some standard modules | Phase 0 spike before building on it |
+| Notes need a manual click | Accept for v1; Cmd+Opt+Y auto-run as a stretch goal |
+| FL's file sandbox is undocumented and could change in any update | Use files only where tested (piano roll folder). Re-run `scripts/check_phase0.py` after FL updates |
+| SysEx size limits | 16 KB tested; cap at 8 KB; add chunking only if needed |
+| The two copies of the message format drift apart | `tests/test_sysex.py` runs both on the same cases |
+| Port numbers or ports set up wrong in FL | `ping` on startup, plus setup-specific error messages |
+| "Reload script" crashes FL | FL-side import rules in §2 (no `datetime`). If it still happens, restart FL instead |
 | SDK v1 vs v2 confusion | Follow v2 docs only (`MCPServer`, not `FastMCP`); pin `mcp>=2,<3` |
-| `python-rtmidi` is barely maintained | Pin Python 3.12. Fallback: drop the doorbell and have the device script check the mailbox on its idle callback (test this in Phase 2) |
+| `python-rtmidi` is barely maintained | Pin Python 3.12. Watch for a release or a maintained fork |
 | Image-Line ships an official AI/project API | Watch FL release notes. If one appears, swap `bridge/` and keep everything else |
 | FL updates change the scripting API | Keep FL-specific code in `fl_scripts/` only |
 | Claude picks the wrong tool | Improve descriptions first, before adding code |
@@ -246,4 +300,5 @@ Each phase = one branch + one PR, reviewed by the lead engineer.
 ## 10. Working agreement
 - Small PRs, one phase at a time.
 - Record every non-obvious choice in `DECISIONS.md` (date + 2 lines).
-- Read other FL MCP repos only **after Phase 3**, as reference, not as copy.
+- Read FL's official manual before designing FL-side behaviour; then test it on the real FL.
+- Other FL MCP repos are reference only, never copied. We read them early, in Phase 0, because of the sandbox (see `docs/`).

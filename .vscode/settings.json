@@ -1,4 +1,8 @@
 {
+  "[python]": {
+    "editor.defaultFormatter": "charliermarsh.ruff",
+    "editor.tabSize": 4
+  },
   "editor.codeActionsOnSave": {
     "source.sort.json": "always"
   },
@@ -6,5 +10,9 @@
   "editor.formatOnSave": true,
   "editor.insertSpaces": true,
   "editor.tabSize": 2,
-  "files.insertFinalNewline": true
+  "files.associations": {
+    "*.pyscript": "python"
+  },
+  "files.insertFinalNewline": true,
+  "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python"
 }
