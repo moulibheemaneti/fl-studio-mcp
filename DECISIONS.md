@@ -43,3 +43,7 @@ Without `createDialog()`/`apply()`, FL runs a piano roll script once per click. 
 
 ## 2026-11-12 — Tempo from FL is BPM × 1000
 `mixer.getCurrentTempo()` returned `140000` for 140 BPM, although the stubs say it returns BPM. The controller script converts it, so the JSON contract always uses plain BPM.
+
+## 2026-11-12 — Phase 0 spikes removed after recording the results
+The spike scripts, `check_phase0.py` and `sysex_spike.py` only work with the test scripts installed in FL, so they don't belong in the codebase. They're preserved in commit `829de72` (see `docs/file-mailbox-findings.md` §8).
+Phase 2 adds `scripts/doctor.py`, which checks the real setup by pinging `device_FLMCP.py`. That's what to re-run after FL updates.

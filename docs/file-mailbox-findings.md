@@ -57,7 +57,7 @@ MCP server ──writes notes.json──► ~/.fl-mcp/ ──► piano roll scri
 
 ### 3.1 Spike runs
 
-The spike scripts live in [`fl_scripts/spike/`](../fl_scripts/spike/). Run them with [`scripts/check_phase0.py`](../scripts/check_phase0.py).
+The spike code was removed after Phase 0. It's preserved in commit `829de72`: the spike scripts are in [`fl_scripts/spike/`](https://github.com/moulibheemaneti/fl-studio-mcp/tree/829de72e455f7cc9dbae31fe628f7618534f293a/fl_scripts/spike), and the setup check in [`scripts/check_phase0.py`](https://github.com/moulibheemaneti/fl-studio-mcp/blob/829de72e455f7cc9dbae31fe628f7618534f293a/scripts/check_phase0.py). See §8 to re-run them.
 
 | Run | What happened | What it showed |
 |---|---|---|
@@ -115,7 +115,7 @@ Read for reference only. No code was copied.
 
 ### 3.5 Piano roll script access on FL 2026
 
-This uses the dialog-free [`FLMCP_Spike.pyscript`](../fl_scripts/spike/FLMCP_Spike.pyscript), run from the piano roll via **Tools → Scripts column → FLMCP_Spike**.
+This uses the dialog-free [`FLMCP_Spike.pyscript`](https://github.com/moulibheemaneti/fl-studio-mcp/blob/829de72e455f7cc9dbae31fe628f7618534f293a/fl_scripts/spike/FLMCP_Spike.pyscript), run from the piano roll via **Tools → Scripts column → FLMCP_Spike**.
 
 | Action | `Piano roll scripts/` | `Piano roll scripts/FLMCP Spike/` (made by the Mac side) | `~/.fl-mcp/` |
 |---|---|---|---|
@@ -133,7 +133,7 @@ So piano roll scripts are limited to their own folder, as ae5n reported. Because
 |---|---|
 | IAC port `FLMCP-REQ` | Mac → FL. In FL: **Input**, controller type *FLMCP SysEx Spike*, Port 10 |
 | IAC port `FLMCP-RES` | FL → Mac. In FL: **Output**, Port 10 (the same number links it to the script) |
-| Test | `uv run scripts/sysex_spike.py`, run twice from two terminals with matching results |
+| Test | [`scripts/sysex_spike.py`](https://github.com/moulibheemaneti/fl-studio-mcp/blob/829de72e455f7cc9dbae31fe628f7618534f293a/scripts/sysex_spike.py), run twice from two terminals with matching results |
 
 | Test | Result |
 |---|---|
@@ -207,11 +207,26 @@ Only `bridge/` changes. The layering rule in the README was made for exactly thi
 
 ## 8. How to reproduce
 
+The spikes were removed after Phase 0. Check out the commit that still has them, and go back to `master` when you're done:
+
+```bash
+git switch --detach 829de72
+```
+
+```bash
+git switch master
+```
+
 1. Install and check:
 
    ```bash
    uv run scripts/check_phase0.py --install
    ```
+
+   This also creates test files. Remove them afterwards:
+   - `~/.fl-mcp/`
+   - `Settings/Hardware/FLMCP Spike/` and `Settings/Hardware/FLMCP SysEx Spike/`
+   - In `Settings/Piano roll scripts/`: `FLMCP_Spike.pyscript`, `FLMCP_spike_input.json` and the `FLMCP Spike/` folder
 
 2. **Controller file access:** set an IAC input's **Controller type** to *FLMCP Spike* (Options → MIDI Settings), then restart FL. The results appear in **View → Script output**. Or test by hand in the **Interpreter** tab with the lines from §3.2.
 3. **SysEx:** set up the ports as in §3.6 with controller type *FLMCP SysEx Spike*, then run:
