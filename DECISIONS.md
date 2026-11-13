@@ -47,3 +47,27 @@ Without `createDialog()`/`apply()`, FL runs a piano roll script once per click. 
 ## 2026-11-12 — Phase 0 spikes removed after recording the results
 The spike scripts, `check_phase0.py` and `sysex_spike.py` only work with the test scripts installed in FL, so they don't belong in the codebase. They're preserved in commit `829de72` (see `docs/file-mailbox-findings.md` §8).
 Phase 2 adds `scripts/doctor.py`, which checks the real setup by pinging `device_FLMCP.py`. That's what to re-run after FL updates.
+
+## 2026-11-13 — Scales are recipes of semitones *and* letter steps
+Each scale lists, per note, how many semitones and how many letters it sits above the root. One routine spells every scale correctly from that (D minor → Bb, F# major → E#, blues → b5).
+Roots may carry at most one sharp or flat. That keeps every note of every scale within a double sharp or flat; a test checks all 21 roots × 12 scales.
+
+## 2026-11-13 — `get_scale(root, scale, octave)`: lenient names, clear errors
+The parameter is `scale`, not `mode`, because pentatonic and blues aren't modes. Names ignore case, spaces and hyphens, and accept aliases ("minor" = natural_minor).
+An unknown name returns an error that lists every supported scale, instead of a strict enum, so the request can also come from a person typing.
+
+## 2026-11-13 — Tools answer in words and data; theory errors reach Claude
+`get_scale` returns `Annotated[CallToolResult, ScaleResult]`: a short text summary plus `structuredContent` that matches a published output schema.
+Theory errors become `ToolError`, so Claude reads the fix-it message. Any other exception stays a generic error, as the SDK intends.
+
+## 2026-11-13 — MIDI numbers use FL Studio's octave naming (C5 = 60)
+`midi = octave × 12 + pitch`, with the octave belonging to the letter (B#4 = 60, Cb5 = 59). The default octave is 5, matching the notes contract in the README.
+
+## 2026-11-13 — Tests run through real MCP, including a real stdio launch
+`mcp.Client` drives the server in-process, and a second test starts `python -m fl_mcp` over stdio, as Claude Desktop does. Async tests use anyio's pytest plugin, already installed with the SDK.
+MCP Inspector is pinned to 2.15.0. It warns that Node 26.7.0 is older than it wants (26.12.1) but works.
+
+## 2026-11-13 — get_scale's description leads with FL's octave naming
+In the first Claude Desktop test, Claude answered "what notes are in D minor?" from memory, correctly but in standard octave naming (C4 = MIDI 60, so D5 = 74). FL Studio labels MIDI 60 as C5 (so D5 = 62), and Claude only called get_scale when it was named.
+The tool description and server instructions now say to use get_scale instead of memory, so note names always match what FL shows. A test checks both texts.
+Result: after a restart, a new chat answered the plain question by calling get_scale on its own, in FL naming (D5 = 62).

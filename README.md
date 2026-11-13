@@ -110,8 +110,12 @@ fl-studio-mcp/
 │   └── file-mailbox-findings.md   # Phase 0: what FL's sandbox allows, with evidence
 ├── pyproject.toml
 ├── src/fl_mcp/
-│   ├── server.py              # creates MCP server, registers tools
-│   ├── tools/                 # thin MCP tool wrappers
+│   ├── __init__.py            # main(): the `fl-mcp` command, starts the server on stdio
+│   ├── __main__.py            # `python -m fl_mcp`, same as `fl-mcp`
+│   ├── server.py              # creates MCP server, registers every toolset
+│   ├── tools/                 # thin MCP tool wrappers, one `register(server)` per module
+│   │   ├── __init__.py        # TOOLSETS: the list of modules the server loads
+│   │   ├── scales.py          # get_scale
 │   │   ├── transport.py
 │   │   ├── notes.py
 │   │   └── project.py
@@ -120,7 +124,9 @@ fl-studio-mcp/
 │   │   ├── link.py            # request/response over FLMCP-REQ / FLMCP-RES, timeouts
 │   │   └── notes_drop.py      # writes notes.json, waits for the .done marker, cleans up
 │   └── theory/                # pure Python, no MCP, no FL
-│       ├── scales.py
+│       ├── errors.py          # MusicTheoryError and friends, with fix-it messages
+│       ├── notes.py           # NoteName: spelling, pitch classes, MIDI numbers
+│       ├── scales.py          # scale recipes + build_scale()
 │       ├── chords.py
 │       └── drums.py
 ├── fl_scripts/
@@ -130,7 +136,10 @@ fl-studio-mcp/
 │   ├── install_mac.sh         # copies FL scripts, creates Piano roll scripts/FLMCP/
 │   └── doctor.py              # checks Python, ports and Port numbers, pings FL; re-run after FL updates
 └── tests/
-    ├── test_theory.py
+    ├── test_notes.py          # theory: reading and spelling notes
+    ├── test_scales.py         # theory: every root × every scale
+    ├── test_get_scale_tool.py # the tool through the MCP protocol (in-process client)
+    ├── test_stdio.py          # the real server process over stdio, like Claude Desktop
     ├── test_sysex.py          # runs both copies of the message format on the same cases
     └── test_notes_drop.py
 ```
@@ -194,7 +203,7 @@ Positions are in **beats**, not ticks. The piano roll script converts them using
 
 | Tool | Phase | Path | What it does |
 |---|---|---|---|
-| `get_scale(root, mode)` | 1 | — | Returns the notes of a scale |
+| `get_scale(root, scale, octave)` | 1 | — | Returns a scale's correctly spelled notes, degrees and MIDI numbers |
 | `play()` / `stop()` | 3 | SysEx | Transport |
 | `set_tempo(bpm)` | 3 | SysEx | Sets project tempo |
 | `set_swing(amount)` *(optional)* | 3 | SysEx | Uses the new FL 2026 swing function, which suits hip-hop |
@@ -228,12 +237,15 @@ Each phase = one branch + one PR, reviewed by the lead engineer.
 - [x] Spikes removed after recording the results (kept in commit `829de72`)
 - **Done when:** the Phase 0 setup check showed 9/9 ✅
 
-### Phase 1: Hello MCP (no FL yet)
-- [ ] `server.py` using `MCPServer` with one tool: `get_scale`
-- [ ] Tested in MCP Inspector
-- [ ] Connected to Claude Desktop
+### Phase 1: Hello MCP (no FL yet) ✅
+- [x] `server.py` using `MCPServer` with one tool: `get_scale`
+- [x] `theory/`: notes and 12 scales, spelled correctly (D minor → Bb, F# major → E#)
+- [x] Tests: theory, the tool through the MCP protocol, and the real server over stdio
+- [x] Tested in MCP Inspector (2.15.0, CLI mode)
+- [x] Connected to Claude Desktop
+- [x] Tool description tuned so Claude picks it on its own (FL's octave naming as the reason)
 - **Learn:** tools, input schemas, stdio transport, how Claude picks tools
-- **Done when:** Claude answers "what notes are in D minor?" by calling our tool
+- **Done when:** Claude answers "what notes are in D minor?" by calling our tool ✅ (13 Nov 2026, Claude Desktop, new chat, D5 = 62)
 
 ### Phase 2: Hello FL over SysEx (no MCP)
 - [ ] `bridge/sysex.py`: message encode/decode, with unit tests (no FL needed)
@@ -299,7 +311,40 @@ Each phase = one branch + one PR, reviewed by the lead engineer.
 
 ---
 
-## 10. Working agreement
+## 10. Try it
+
+```bash
+uv sync
+```
+
+```bash
+uv run pytest
+```
+
+Inspect the server with the MCP Inspector (Node required):
+
+```bash
+npx -y @modelcontextprotocol/inspector@2.15.0 --cli --method tools/list -- "$(which uv)" --directory "$PWD" run fl-mcp
+```
+
+Connect Claude Desktop by adding this to `~/Library/Application Support/Claude/claude_desktop_config.json`, with your own paths, then restart Claude Desktop:
+
+```json
+{
+  "mcpServers": {
+    "fl-studio": {
+      "command": "/opt/homebrew/bin/uv",
+      "args": ["--directory", "/path/to/fl-studio-mcp", "run", "fl-mcp"]
+    }
+  }
+}
+```
+
+Claude Desktop doesn't use your shell's `PATH`, so `command` must be the full path to `uv` (run `which uv`).
+
+---
+
+## 11. Working agreement
 - Small PRs, one phase at a time.
 - Record every non-obvious choice in `DECISIONS.md` (date + 2 lines).
 - Read FL's official manual before designing FL-side behaviour; then test it on the real FL.
