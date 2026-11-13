@@ -1,9 +1,17 @@
-"""FL Studio MCP server."""
+"""FL Studio MCP: lets Claude compose in FL Studio.
 
-import sys
+Run it with ``uv run fl-mcp`` (or ``python -m fl_mcp``). That starts the MCP
+server on stdio, which is how Claude Desktop talks to it.
+
+stdout is the MCP channel, so nothing in this package prints. The MCP SDK sends
+log messages to stderr.
+"""
 
 
 def main() -> None:
-    # stdout is the MCP channel, so anything human-readable goes to stderr.
-    print("fl-mcp: the MCP server arrives in Phase 1.", file=sys.stderr)
-    raise SystemExit(1)
+    """The opening scene: build the server and serve until the client disconnects."""
+    # Imported here so that `import fl_mcp.theory` doesn't load the MCP SDK:
+    # the theory layer stays independent of MCP.
+    from fl_mcp.server import build_server
+
+    build_server().run()  # stdio is the default transport
